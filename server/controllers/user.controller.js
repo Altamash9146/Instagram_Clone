@@ -2,6 +2,8 @@ import { User } from "../models/user.model.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
+import { getDataUri } from "../utils/dataUri.js";
+import cloudinary from "../utils/cloudinary.js";
 dotenv.config();
 
 export const signUp = async (req, res) => {
@@ -41,7 +43,7 @@ export const signUp = async (req, res) => {
         maxAge: 1 * 24 * 60 * 60 * 1000,
       })
       .json({
-        message: `${username} your created successfully`,
+        message: `${username} your account created successfully`,
         success: true,
       });
   } catch (error) {
@@ -70,7 +72,7 @@ export const logIn = async (req, res) => {
       return res.status(401).json({ message: "Authentication failed" });
     }
 
-    user = {
+    const userData = {
       _id: user._id,
       email: user.email,
       username: user.username,
@@ -93,12 +95,13 @@ export const logIn = async (req, res) => {
         maxAge: 1 * 24 * 60 * 60 * 1000,
       })
       .json({
-        message: `Welcome back ${user.name}`,
+        message: `Welcome back ${user.username}`,
         success: true,
+        user: userData,
       });
   } catch (error) {
     console.log("login error", error);
-    return res.send(500).json({ message: "Internal Server Error" });
+    return res.status(500).json({ message: "Internal Server Error" });
   }
 };
 
@@ -123,18 +126,119 @@ export const logOut = async (req, res) => {
 };
 
 export const getUser = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const user = await User.findById(id);
-        
-        if(!user){
-            return res.status(404).json({message: "User not found"})
-        }
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id).select("-password");
 
-        return res.json(user);
-
-    } catch (error) {
-        console.log("getUser error", error);
-        return res.status(500).json({message: "Internal server error"})
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
     }
-}
+
+    return res.json(user);
+  } catch (error) {
+    console.log("getUser error", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+export const editUserProfile = async (req, res) => {
+  try {
+  
+    const userId = req.user;    
+
+    const { bio, gender } = req.body;
+    const profilePicture = req.file;
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    let cloudResponse;
+    if (profilePicture) {
+      const fileUri = getDataUri(profilePicture);
+      cloudResponse = await cloudinary.uploader.upload(fileUri);
+    }
+
+    if (bio) user.bio = bio;
+    if (gender) user.gender = gender;
+    if (profilePicture) user.profilePicture = cloudResponse.secure_url;
+
+    await user.save();
+
+    const { password, ...updatedUser } = user.toObject();
+
+    return res.status(200).json({
+      message: "Profile updated sucessfully",
+      success: true,
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+};
+
+export const getSuggestedUsers = async (req, res) => {
+  try {
+    const suggestedUser = await User.find({ _id: { $ne: req.user } }).select(
+      "-password"
+    );
+    if (!suggestedUser) {
+      return res.status(404).json({ message: "No suggested users" });
+    }
+    return res.status(200).json({ success: true, users: suggestedUser });
+  } catch (error) {
+    console.log(error);
+  }
+};
+
+export const followOrUnfollow = async (req, res) => {
+  try {
+    const followers = req.user;
+    const following = req.params.id;
+
+    // console.log("Followers ID:", followers);
+    // console.log("Following ID:", following);
+
+    if (followers === following) {
+      return res
+        .status(400)
+        .json({ message: "You cannot follow or unfollow yourself" });
+    }
+
+    const user = await User.findById(followers);
+    const targetUser = await User.findById(following);
+
+    if (!user || !targetUser) {
+      return res
+        .status(404)
+        .json({ message: "user not found", success: false });
+    }
+
+    const isFollowing = user.following.includes(following);
+    if (isFollowing) {
+      await Promise.all([
+        User.updateOne({ _id: followers }, { $pull: { following: following } }),
+        User.updateOne({ _id: following }, { $pull: { followers: followers } }),
+      ]);
+      return res
+        .status(200)
+        .json({ message: "unfollowed sucessfully", success: true });
+    } else {
+      await Promise.all([
+        User.updateOne({ _id: followers }, { $push: { following: following } }),
+        User.updateOne({ _id: following }, { $push: { followers: followers } }),
+      ]);
+      return res
+        .status(200)
+        .json({ message: "followed sucessfully", success: true });
+    }
+  } catch (error) {
+    console.log(error);
+    return res
+      .status(500)
+      .json({ message: "Internal Server Error", success: false });
+  }
+};
